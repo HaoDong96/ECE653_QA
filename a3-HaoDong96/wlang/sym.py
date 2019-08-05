@@ -24,6 +24,7 @@ from __future__ import print_function
 
 import wlang.ast
 import cStringIO
+import wlang.undef_visitor
 import sys
 
 import z3
@@ -98,6 +99,9 @@ class SymState(object):
 
         return buf.getvalue ()
 
+    def addcond_isSolvable(self, cond):
+        self.add_pc(cond)
+        return not self.is_empty()
 class SymExec (wlang.ast.AstVisitor):
     def __init__(self, loop_bound=10):
         self._global_loop_bound = loop_bound
@@ -213,38 +217,64 @@ class SymExec (wlang.ast.AstVisitor):
 
     def _defs (self, node):
         """ Returns the set of all varialbes modified (defined) by a given node """
-        dVisitor = UndefVisitor ()
+        dVisitor = wlang.undef_visitor.UndefVisitor()
         dVisitor.check (node)
         return dVisitor.get_defs ()
 
 
     def visit_WhileStmt(self, node, *args, **kwargs):
-        """ Symbolic execution of while loops with no invariants """
-        bound = kwargs.get ('loop_bound')
-        if bound is None:
-            bound = self._global_loop_bound
+        if node.inv is not None:
+            sim_inv = z3.simplify(self.visit(node.inv, *args, **kwargs))
+            init_state = kwargs['state'].fork()
+            not_inv_state = init_state[0]
+            inv_state = init_state[1]
 
-        cond_val = self.visit (node.cond, *args, **kwargs);
+            # inv fails initiation
+            if not_inv_state.addcond_isSolvable(z3.Not(sim_inv)):
+                print("inv fails initiation")
+            # use Undefined Use Visitor to find all variables that are modified or defined
+            for var in self._defs(node.body):
+                inv_state.env[var.name] = z3.FreshInt(var.name)
+            
+            # add inv into pc of inv_state
+            inv_state.add_pc(z3.simplify(self.visit(node.inv, *args, state=inv_state)))
+            # fork the state based on the condition and process both conditions accordingly
+            cond = self.visit(node.cond, *args, state=inv_state)
+            inv_states = inv_state.fork()
 
-        # one state enters the loop, one exits
-        enter_st, exit_st = kwargs['state'].fork ()
+            #cond is satisfied, enter the loop
+            if inv_states[0].addcond_isSolvable(cond):
+                final_state = self.visit(node.body, state=inv_states[0])
+                for st in final_state:
+                    if st.addcond_isSolvable(z3.simplify(self.visit(node.inv, *args, state=st))):
+                        print("inv fails invariance")
+            if inv_states[1].addcond_isSolvable(z3.Not(cond)):
+                return[inv_states[1]]
+            else:
+                return[]
 
-        # if enter loop, loop condition is true
-        enter_st.add_pc (cond_val)
-        # if exit loop, loop condition is false
-        exit_st.add_pc (z3.Not (cond_val))
+        done = []
+        while_states = [kwargs['state']]
 
-        # if loop condition can be satisfied and we have not tripped loop bound
-        if bound > 0 and not enter_st.is_empty ():
-            # do loop body, might produce many new states
-            for out in self.visit (node.body, *args, state=enter_st):
-                for out2 in self.visit (node, *args, state=out, loop_bound=bound - 1):
-                    yield out2
+        executed_time = 1
 
-        # if negation of loop condition can be satisfied then can exit
-        # the loop immediatelly
-        if not exit_st.is_empty ():
-            yield exit_st
+        while(len(while_states) != 0 and executed_time <= 10):
+            executed_time += 1
+            updated_while_states = []
+            for state in while_states:
+                cond = self.visit(node.cond, state=state) 
+                cond_fork = state.fork()
+
+                # if after adding condition, state is still solvable, visit node.body,
+                # and extend returned state-list
+                if cond_fork[0].addcond_isSolvable(cond):
+                    updated_while_states.extend(self.visit(node.body, state=cond_fork[0]))
+                # if after adding not condition, state is still solvable, append the termination state into returning states
+                if cond_fork[1].addcond_isSolvable(z3.Not(cond)):
+                    done.append(cond_fork[1])
+            while_states = updated_while_states
+        return done
+
 
 
     def visit_AssertStmt (self, node, *args, **kwargs):
@@ -298,7 +328,7 @@ class SymExec (wlang.ast.AstVisitor):
                 for out2 in self._run_Stmts (stmts[1:], out1):
                     yield out2
 
-def _parse_args ():
+def _parse_args ():# pragma: no cover
     import argparse
     ap = argparse.ArgumentParser (prog='sym',
                                   description='WLang Interpreter')
@@ -308,7 +338,7 @@ def _parse_args ():
     args = ap.parse_args ()
     return args
 
-def main ():
+def main ():# pragma: no cover
     args = _parse_args ()
     ast = wlang.ast.parse_file (args.in_file)
     st = SymState ()
@@ -326,5 +356,5 @@ def main ():
         print ('[symexec]: found', count, 'symbolic states')
     return 0
 
-if __name__ == '__main__':
+if __name__ == '__main__':# pragma: no cover
     sys.exit (main ())

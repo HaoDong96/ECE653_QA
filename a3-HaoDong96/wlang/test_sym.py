@@ -23,14 +23,60 @@
 import unittest
 import wlang.ast as ast
 import wlang.sym
+import z3 
 
 class TestSym (unittest.TestCase):
     def test_one (self):
-        prg1 = "havoc x; assume x > 10; assert x > 15"
+        prg1 = """{a := 1;
+              b := -1;
+              c := a + b; d := b - a;
+              e := a * b; f := a / b};
+              if a > 1 and a >= b then b := 3; 
+              if a <= 1 or b < 3 then a := 1; 
+              if false and not a = 1 then a := 1 else print_state; 
+              skip;
+              print_state;
+              while (a < 3) or (b = 1) and true do {a := a + 1};
+              assume b = -1;
+              assert a = 3
+              """
         ast1 = ast.parse_string (prg1)
         sym = wlang.sym.SymExec ()
         st = wlang.sym.SymState ()
+        st.pick_concerete()
+        st.is_error()
+        st.mk_error()
+        st.to_smt2()
+        repr(st)
         out = [s for s in sym.run (ast1, st)]
-        self.assertEquals (len(out), 1)
+        # self.assertEquals (len(out), 1)
+
+        st2 = wlang.sym.SymState() 
+        st2.add_pc(z3.BoolVal(True) )
+        st2.add_pc(z3.BoolVal(False) )
+        st2.pick_concerete()
+        
+    def test_two(self):
+        prg1 = """
+              havoc x,y; assume y >= 0; c:= 0; r:= x; while c<y inv c <= y  and r = x + c do { r:= r+1; c:= c+1 }; assert r= x+y;
+              havoc x,y; assume y >= 0; c:= 0; r:= x; while c<y inv c >y do { r:= r+1; c:= c+1 }; assert r= x+y;
+              havoc x,y; assume y >= 0; c:= 0; r:= x; while true inv c <= y  and r = x + c do { r:= r+1; c:= c+1 }; assert r= x+y"""
+        ast1 = ast.parse_string(prg1)
+        sym = wlang.sym.SymExec ()
+        st = wlang.sym.SymState ()
+        out = [s for s in sym.run(ast1, st)]
+        #self.assertEquals(len(out), 1)
+    
+    def test_three(self):
+        prg1 = """ assert false"""
+        ast1 = ast.parse_string(prg1)
+        sym = wlang.sym.SymExec ()
+        st = wlang.sym.SymState ()
+        out = [s for s in sym.run(ast1, st)]
+        #self.assertEquals(len(out), 1)
+
+
+
+
         
         
